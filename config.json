@@ -1,0 +1,47 @@
+{
+  "algorithm": {
+    "normalization": {
+      "target": 1,
+      "comment": "Target value for valuation normalization (1 = proportional normalization)"
+    },
+    "phase_1a": {
+      "tie_tolerance": 0.001,
+      "max_sacrifice_threshold": 0.2,
+      "top_options_to_consider": 3,
+      "comments": {
+        "tie_tolerance": "Maximum difference between scores to consider them tied (0-1 scale)",
+        "max_sacrifice_threshold": "Maximum sacrifice ratio allowed (0.0-1.0, e.g., 0.2 = 20%)",
+        "top_options_to_consider": "Number of top options each player considers"
+      }
+    },
+    "phase_1b": {
+      "tie_tolerance": 0.001,
+      "relative_tie_tolerance": 0.05,
+      "comments": {
+        "tie_tolerance": "Maximum difference between values for tie detection in champion graph",
+        "relative_tie_tolerance": "Tolerance for relative metrics like sacrifice ratios"
+      }
+    },
+    "champion_graph": {
+      "max_cycle_length": 4,
+      "envy_threshold": 0.01,
+      "comments": {
+        "max_cycle_length": "Maximum length of cycles to consider in champion graph",
+        "envy_threshold": "Minimum envy level to consider significant"
+      }
+    }
+  },
+  "testing": {
+    "valuation_range": {
+      "min": 1,
+      "max": 1000
+    },
+    "perturbation": {
+      "base_epsilon": 0.0001
+    },
+    "comments": {
+      "valuation_range": "Range for random valuation generation",
+      "perturbation": "Settings for non-degeneracy perturbation"
+    }
+  }
+}
