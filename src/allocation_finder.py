@@ -78,6 +78,7 @@ class AllocationFinder:
         print("-" * 70)
         allocation_dict = self._initial_round_robin_with_consideration()
         allocation_obj = self._dict_to_allocation(allocation_dict)
+        # TODO: Parece que el obj solo se usa para imprimir, mejor que solo use allocation dict
         self._print_allocation_state(allocation_obj, "After Round Robin")
         
         # PHASE 1B: Champion Graph for remaining goods
@@ -94,6 +95,7 @@ class AllocationFinder:
             print(f"\nProcessing good {i+1}/{len(remaining_goods)}: {good}")
             allocation_dict = self._champion_graph_allocation(good, allocation_dict)
             allocation_obj = self._dict_to_allocation(allocation_dict)
+            # TODO: que solo use allocation dict
             self._print_allocation_state(allocation_obj, f"After assigning {good}")
         
         print("\n" + "=" * 60)
@@ -131,6 +133,7 @@ class AllocationFinder:
                     # Calculate envy reduction
                     _, final_envy, _ = self._calculate_envy_matrix(final_allocation)
                     phase2_info['final_envy'] = final_envy
+                    # TODO: actualizar esto a que solo use efx-envy y no envy 
                     phase2_info['envy_reduction'] = initial_envy - final_envy
                     
                     self._print_allocation_state(final_allocation, "After Phase 2")
@@ -516,7 +519,9 @@ class AllocationFinder:
             # Find who would most want this bundle (target_bundle)
             best_champion = None
             best_gain = -1
-            best_current_utility = float('inf')
+
+            # for tie breaking, player with lowest current utility is preferred
+            best_current_utility = float('inf') 
             
             for potential_champion in self.players:
                 if potential_champion.name == target_name:
@@ -588,7 +593,7 @@ class AllocationFinder:
     
     def _choose_best_cycle(self, cycles, good, allocation):
         """
-        Choose the cycle that most reduces envy from multiple cycles.
+        Choose the first cycle from multiple cycles (arbitrary selection).
         
         Args:
             cycles: List of cycles
@@ -596,64 +601,20 @@ class AllocationFinder:
             allocation: Current allocation
             
         Returns:
-            list: Best cycle to process
+            list: First cycle to process
         """
-        if len(cycles) == 1:
-            return cycles[0]
-        
-        best_cycle = cycles[0]
-        best_envy_reduction = 0
-        
-        for cycle in cycles:
-            envy_reduction = self._calculate_envy_reduction(cycle, good, allocation)
-            if envy_reduction > best_envy_reduction:
-                best_envy_reduction = envy_reduction
-                best_cycle = cycle
-        
-        print(f"      Chose cycle {best_cycle} (envy reduction: {best_envy_reduction:.3f})")
-        return best_cycle
+
+        # TODO: Implement a more sophisticated cycle selection strategy
+        chosen_cycle = cycles[0]
+        print(f"      Chose first cycle: {chosen_cycle} (arbitrary selection)")
+        return chosen_cycle
     
-    def _calculate_envy_reduction(self, cycle, good, allocation):
-        """
-        Calculate how much envy would be reduced by processing this cycle.
-        
-        Args:
-            cycle: Cycle to evaluate
-            good: Good to assign
-            allocation: Current allocation
-            
-        Returns:
-            float: Envy reduction score
-        """
-        total_gain = 0
-        
-        for i, player_name in enumerate(cycle):
-            player = next(p for p in self.players if p.name == player_name)
-            
-            # Current bundle
-            current_bundle = allocation[player_name]
-            current_value = sum(player.get_valuation(g) for g in current_bundle)
-            
-            # Next player's bundle in cycle (what they would get)
-            next_player_name = cycle[(i + 1) % len(cycle)]
-            next_bundle = allocation[next_player_name].copy()
-            
-            # If this is first player in cycle, they also get the new good
-            if i == 0:
-                next_bundle.append(good)
-            
-            next_value = sum(player.get_valuation(g) for g in next_bundle)
-            gain = next_value - current_value
-            
-            total_gain += max(0, gain)  # Only count positive gains
-        
-        return total_gain
+
     
     def _process_cycle(self, cycle, good, allocation):
         """
-        Process a cycle in the champion graph intelligently.
-        Evaluates ALL players in the cycle for direct assignment and compares with rotation.
-        Chooses the strategy that minimizes total envy.
+        Process a cycle in the champion graph using direct assignment only.
+        Evaluates ALL players in the cycle for direct assignment and chooses the best.
         
         Args:
             cycle: List of player names forming a cycle
@@ -670,7 +631,7 @@ class AllocationFinder:
         _, current_envy, _ = self._calculate_envy_matrix(current_allocation_obj)
         print(f"      Current total envy: {current_envy:.3f}")
         
-        # Strategy 1: Evaluate direct assignment to ALL players in the cycle
+        # Evaluate direct assignment to ALL players in the cycle
         # Use EFX-envy as primary criterion, regular envy as tie-breaker
         best_direct_efx_envy = float('inf')
         best_direct_envy = float('inf')
@@ -681,7 +642,7 @@ class AllocationFinder:
         # Tolerance for tie detection with non-degenerate goods
         TIE_TOLERANCE = config.get('algorithm.phase_1b.tie_tolerance', 0.001)
         
-        print(f"      Strategy 1: Testing direct assignment to each player in cycle")
+        print(f"      Testing direct assignment to each player in cycle")
         
         for player_name in cycle:
             player = next(p for p in self.players if p.name == player_name)
@@ -742,64 +703,11 @@ class AllocationFinder:
             best_direct_valuation = chosen_player.get_valuation(good)
             print(f"        Lexicographic tie-breaker chose: {best_direct_recipient}")
         
-        print(f"      Best direct assignment: {best_direct_recipient} (values {good} at {best_direct_valuation:.3f}, EFX-envy: {best_direct_efx_envy:.3f}, regular envy: {best_direct_envy:.3f})")
+        print(f"      [+] Direct assignment chosen: {best_direct_recipient} (values {good} at {best_direct_valuation:.3f}, EFX-envy: {best_direct_efx_envy:.3f}, regular envy: {best_direct_envy:.3f})")
         
-        # Strategy 2: Test rotation (original strategy)
-        print(f"      Strategy 2: Testing rotation")
-        test_allocation_rotation = allocation.copy()
-        for player_name in test_allocation_rotation:
-            test_allocation_rotation[player_name] = allocation[player_name].copy()
-        
-        # Perform rotation for testing
-        original_bundles = {}
-        for player_name in cycle:
-            original_bundles[player_name] = test_allocation_rotation[player_name].copy()
-        
-        for i in range(len(cycle)):
-            current_player = cycle[i]
-            next_player = cycle[(i + 1) % len(cycle)]
-            test_allocation_rotation[current_player] = original_bundles[next_player].copy()
-        
-        # Add the new good to the first player in cycle
-        recipient_rotation = cycle[0]
-        test_allocation_rotation[recipient_rotation].append(good)
-        
-        test_allocation_rotation_obj = self._dict_to_allocation(test_allocation_rotation)
-        _, rotation_efx_envy, _ = self._calculate_efx_envy_matrix(test_allocation_rotation_obj)
-        _, rotation_envy, _ = self._calculate_envy_matrix(test_allocation_rotation_obj)
-        
-        print(f"      Rotation (assign to {recipient_rotation}): EFX-envy={rotation_efx_envy:.3f}, regular envy={rotation_envy:.3f}")
-        
-        # Choose the strategy that results in lowest EFX-envy, tie-break with regular envy
-        strategies = [
-            ("direct assignment", best_direct_efx_envy, best_direct_envy, "direct"),
-            ("rotation", rotation_efx_envy, rotation_envy, "rotation")
-        ]
-        
-        # Sort by EFX-envy first, then by regular envy
-        strategies.sort(key=lambda x: (x[1], x[2]))
-        best_strategy_name, best_efx_envy, best_regular_envy, best_strategy_type = strategies[0]
-        
-        print(f"      [+] Choosing {best_strategy_name}")
-        print(f"        (lowest EFX-envy: {best_efx_envy:.3f}, regular envy: {best_regular_envy:.3f})")
-        
-        if best_strategy_type == "direct":
-            allocation[best_direct_recipient].append(good)
-            print(f"      Assigned {good} directly to {best_direct_recipient}")
-        elif best_strategy_type == "rotation":
-            # Perform the actual rotation
-            original_bundles = {}
-            for player_name in cycle:
-                original_bundles[player_name] = allocation[player_name].copy()
-            
-            for i in range(len(cycle)):
-                current_player = cycle[i]
-                next_player = cycle[(i + 1) % len(cycle)]
-                allocation[current_player] = original_bundles[next_player].copy()
-            
-            # Add the new good to the recipient
-            allocation[recipient_rotation].append(good)
-            print(f"      Assigned {good} to {recipient_rotation} and rotated bundles in cycle")
+        # Perform the assignment
+        allocation[best_direct_recipient].append(good)
+        print(f"      Assigned {good} directly to {best_direct_recipient}")
         
         return allocation
     
