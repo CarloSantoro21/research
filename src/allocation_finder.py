@@ -491,17 +491,18 @@ class AllocationFinder:
     
     def _build_champion_graph(self, good, allocation):
         """
-        Build champion graph for assigning a specific good.
+        Build champion graph for assigning a specific good using EFX-envy.
         
         The champion graph is a key concept in EFX algorithms:
         - For each player j, we consider the bundle X_j U {good}
-        - We find which other player would most benefit from having this bundle
+        - We find which other player would have the highest EFX-envy towards this bundle
         - That player becomes the "champion" of player j
         - This creates a directed graph: j -> champion(j)
         
         Cycles in this graph indicate beneficial trading opportunities:
-        If A -> B -> C -> A, then A wants B's bundle+good, B wants C's bundle+good,
-        and C wants A's bundle+good, creating a win-win-win redistribution.
+        If A -> B -> C -> A, then A has EFX-envy towards B's bundle+good, 
+        B has EFX-envy towards C's bundle+good, and C has EFX-envy towards A's bundle+good, 
+        creating opportunities for EFX-improving redistributions.
         
         Args:
             good: Good to be assigned
@@ -516,9 +517,9 @@ class AllocationFinder:
             target_name = target_player.name
             target_bundle = allocation[target_name] + [good]
             
-            # Find who would most want this bundle (target_bundle)
+            # Find who would have the highest EFX-envy towards this bundle (target_bundle)
             best_champion = None
-            best_gain = -1
+            best_efx_envy = -1
 
             # for tie breaking, player with lowest current utility is preferred
             best_current_utility = float('inf') 
@@ -527,23 +528,33 @@ class AllocationFinder:
                 if potential_champion.name == target_name:
                     continue  # Can't be champion of your own bundle
                 
-                # Calculate gain if this player got target_bundle instead of their current
+                # Calculate EFX-envy if this player envied the target_bundle
                 current_bundle = allocation[potential_champion.name]
                 current_value = sum(potential_champion.get_valuation(g) for g in current_bundle)
-                target_value = sum(potential_champion.get_valuation(g) for g in target_bundle)
                 
-                gain = target_value - current_value
+                # Calculate EFX-envy towards target_bundle
+                if not target_bundle:
+                    efx_envy = 0.0
+                else:
+                    # Find least valued item in target_bundle (from potential_champion's perspective)
+                    least_valued_item = min(target_bundle, key=lambda g: potential_champion.get_valuation(g))
+                    
+                    # Calculate value of target_bundle after removing least valued item
+                    reduced_bundle_value = sum(potential_champion.get_valuation(g) for g in target_bundle if g != least_valued_item)
+                    
+                    # EFX-envy = max(0, reduced_value - current_value)
+                    efx_envy = max(0.0, reduced_bundle_value - current_value)
                 
-                # Champion selection: highest absolute gain, tie-break by lowest current utility
-                if (gain > best_gain or 
-                    (gain == best_gain and current_value < best_current_utility)):
-                    best_gain = gain
+                # Champion selection: highest EFX-envy, tie-break by lowest current utility
+                if (efx_envy > best_efx_envy or 
+                    (efx_envy == best_efx_envy and current_value < best_current_utility)):
+                    best_efx_envy = efx_envy
                     best_champion = potential_champion
                     best_current_utility = current_value
             
-            if best_champion and best_gain > 0:  # Only add edge if there's actual envy
+            if best_champion and best_efx_envy > 0:  # Only add edge if there's actual EFX-envy
                 champion_graph[target_name] = best_champion.name
-                print(f"      {best_champion.name} is champion of {target_name}'s bundle + {good} (gain: +{best_gain:.3f})")
+                print(f"      {best_champion.name} is champion of {target_name}'s bundle + {good} (EFX-envy: +{best_efx_envy:.3f})")
         
         return champion_graph
     
@@ -604,7 +615,7 @@ class AllocationFinder:
             list: First cycle to process
         """
 
-        # TODO: Implement a more sophisticated cycle selection strategy
+        # TODO: Implement a more sophisticated cycle selection strategy if needed
         chosen_cycle = cycles[0]
         print(f"      Chose first cycle: {chosen_cycle} (arbitrary selection)")
         return chosen_cycle
@@ -714,6 +725,7 @@ class AllocationFinder:
     def _assign_to_source(self, good, allocation, champion_graph):
         """
         When no cycle exists, assign the good to a source node or best choice.
+        Uses systematic evaluation to minimize EFX-envy in the system.
         
         Args:
             good: Good to assign
@@ -729,23 +741,86 @@ class AllocationFinder:
         sources = all_players - targets  # Players who are not envied
         
         if sources:
-            # Pick source with lowest current utility (tie-breaking)
+            print(f"      Source nodes found: {sources}")
+            print(f"      Evaluating assignment to minimize EFX-envy")
+            
+            # Evaluate assignment to each source node
             best_source = None
-            lowest_utility = float('inf')
+            best_efx_envy = float('inf')
+            best_regular_envy = float('inf')
+            best_utility = float('inf')
+            tied_candidates = []
+            
+            # Tolerance for tie detection
+            TIE_TOLERANCE = config.get('algorithm.phase_1b.tie_tolerance', 0.001)
             
             for source in sources:
-                current_utility = sum(
-                    next(p for p in self.players if p.name == source).get_valuation(g) 
-                    for g in allocation[source]
-                )
-                if current_utility < lowest_utility:
-                    lowest_utility = current_utility
+                player = next(p for p in self.players if p.name == source)
+                valuation = player.get_valuation(good)
+                
+                # Test assignment to this source
+                test_allocation = allocation.copy()
+                for pname in test_allocation:
+                    test_allocation[pname] = allocation[pname].copy()
+                test_allocation[source].append(good)
+                
+                test_allocation_obj = self._dict_to_allocation(test_allocation)
+                _, test_efx_envy, _ = self._calculate_efx_envy_matrix(test_allocation_obj)
+                _, test_regular_envy, _ = self._calculate_envy_matrix(test_allocation_obj)
+                
+                # Calculate current utility for this source
+                current_utility = sum(player.get_valuation(g) for g in allocation[source])
+                
+                print(f"        {source} (values {good} at {valuation:.3f}): EFX-envy={test_efx_envy:.3f}, regular envy={test_regular_envy:.3f}, utility={current_utility:.3f}")
+                
+                # Primary criterion: EFX-envy (lower is better)
+                if test_efx_envy < best_efx_envy - TIE_TOLERANCE:
+                    # Clear winner in EFX-envy
+                    best_efx_envy = test_efx_envy
+                    best_regular_envy = test_regular_envy
+                    best_utility = current_utility
                     best_source = source
+                    tied_candidates = [source]
+                elif abs(test_efx_envy - best_efx_envy) <= TIE_TOLERANCE:
+                    # EFX-envy tie - use regular envy as tie-breaker
+                    if test_regular_envy < best_regular_envy - TIE_TOLERANCE:
+                        # Better regular envy breaks the EFX-envy tie
+                        best_efx_envy = test_efx_envy
+                        best_regular_envy = test_regular_envy
+                        best_utility = current_utility
+                        best_source = source
+                        tied_candidates = [source]
+                    elif abs(test_regular_envy - best_regular_envy) <= TIE_TOLERANCE:
+                        # Both EFX-envy and regular envy tied - use utility as tie-breaker
+                        if current_utility < best_utility - TIE_TOLERANCE:
+                            # Lower utility breaks the tie
+                            best_efx_envy = test_efx_envy
+                            best_regular_envy = test_regular_envy
+                            best_utility = current_utility
+                            best_source = source
+                            tied_candidates = [source]
+                        elif abs(current_utility - best_utility) <= TIE_TOLERANCE:
+                            # All criteria tied - add to candidates for lexicographic tie-breaking
+                            if source not in tied_candidates:
+                                tied_candidates.append(source)
+                            
+                            # Include previous best if not already there
+                            if len(tied_candidates) == 1 and best_source and best_source not in tied_candidates:
+                                tied_candidates.insert(0, best_source)
+                            
+                            best_source = source
+            
+            # Handle ties with lexicographic order
+            if len(tied_candidates) > 1:
+                print(f"        Tie detected between {tied_candidates} - using lexicographic order")
+                best_source = min(tied_candidates)  # P1 < P2 < P3 < P4
+                print(f"        Lexicographic tie-breaker chose: {best_source}")
             
             recipient = best_source
-            print(f"      Assigned {good} to source node {recipient} (lowest utility)")
+            print(f"      [+] Source assignment chosen: {recipient} (EFX-envy: {best_efx_envy:.3f}, regular envy: {best_regular_envy:.3f}, utility: {best_utility:.3f})")
         else:
             # No clear source - assign to player who values this good most
+            print(f"      No source nodes found - evaluating all players")
             best_recipient = None
             best_value = -1
             
@@ -1268,6 +1343,9 @@ class AllocationFinder:
             print(f"\n--- Step {step} ---")
             print(f"  Current EFX-envy relationships in queue: {envy_relationships}")
 
+            # Capture the original state of the queue BEFORE processing
+            original_relationships = envy_relationships.copy()
+
             # Create comprehensive state hash that includes both envy relationships and goods context
             state_hash = self._create_phase2_state_hash(envy_relationships, current_allocation)
             if state_hash in seen_states:
@@ -1344,9 +1422,8 @@ class AllocationFinder:
                 current_allocation = test_allocation
 
                 # Recalculate envy relationships after this redistribution
-                old_relationships = envy_relationships.copy()
                 envy_relationships = self._get_envy_relationships(current_allocation)
-                print(f"    [>] Updated EFX-envy relationships: {old_relationships} -> {envy_relationships}")
+                print(f"    [>] Updated EFX-envy relationships: {original_relationships} -> {envy_relationships}")
                 
                 # Reset seen states since we made progress
                 seen_states = set()

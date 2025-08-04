@@ -64,7 +64,7 @@ def single_test_mode():
         print(f"Number of goods (K): {k}")
         print(f"Perturbation epsilon: {epsilon:.10f}")
         print(f"Goods: {goods}")
-        
+
         # Show player valuations
         print(f"\nPLAYER VALUATIONS:")
         print("-" * 50)
