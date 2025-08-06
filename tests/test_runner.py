@@ -26,12 +26,11 @@ def run_tests(goods, players):
     
     results = {}
 
-    print(f"\n========== ALGORITHM SUMMARY ({len(goods)} GOODS, 4 PLAYERS) ==========")
-    print(f"Players: {[p.name for p in players]}")
-    print(f"Goods: {goods}")
+    print(f"\n==================================================")
+    print(f"EFX Algorithm for 4 agents")
+    print(f"==================================================")
         
     # EFX Algorithm
-    print("\n1. EFX ALGORITHM (4 PLAYERS)")
     start_time = time.time()
     algorithm_result, phase2_info = finder.find_efx_allocation_algorithm_1()
     end_time = time.time()

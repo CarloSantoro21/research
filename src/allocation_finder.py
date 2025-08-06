@@ -30,17 +30,9 @@ class AllocationFinder:
         # Use fixed target from config for normalization to proportions
         target = config.get('algorithm.normalization.target', 1)
         
-        print("NORMALIZATION OF VALUATIONS")
-        print("-" * 30)
-        print(f"Target for each player: {target} (proportional normalization)")
-        
         # Normalize each player
         for player in self.players:
-            original_sum = sum(player.valuation.values())
             player.normalize_valuations(target)
-            print(f"{player.name}: {original_sum:.3f} -> {target} (std_dev: {player.get_std_deviation():.3f})")
-        
-        print()
     
     def find_efx_allocation_algorithm_1(self):
         """
@@ -53,9 +45,6 @@ class AllocationFinder:
         Returns:
             tuple: (Allocation, phase2_info) where phase2_info contains execution details
         """
-        print("Starting EFX Algorithm - Three Phase Approach")
-        print("=" * 60)
-        
         # Initialize Phase 2 tracking
         phase2_info = {
             'executed': False,
@@ -73,50 +62,41 @@ class AllocationFinder:
         # Print initial value functions to analyze preferences
         self._print_value_functions()
         
+        print("\n" + "="*80)
+        print("PHASE 1A: ROUND ROBIN WITH CONSIDERATION")
+        print("="*80)
+        
         # PHASE 1A: Initial Round Robin with standard deviation-based ordering
-        print("\nPHASE 1A: Initial Round Robin with Standard Deviation-Based Ordering")
-        print("-" * 70)
         allocation_dict = self._initial_round_robin_with_consideration()
         allocation_obj = self._dict_to_allocation(allocation_dict)
-        # TODO: Parece que el obj solo se usa para imprimir, mejor que solo use allocation dict
-        self._print_allocation_state(allocation_obj, "After Round Robin")
+        
+        print("\n" + "="*80)
+        print("PHASE 1B: CHAMPION GRAPH ALLOCATION")
+        print("="*80)
         
         # PHASE 1B: Champion Graph for remaining goods
-        print("\nPHASE 1B: Champion Graph Allocation")
-        print("-" * 35)
         remaining_goods = self._get_remaining_goods(allocation_dict)
-        
-        # Print value functions again to analyze remaining goods opportunities
-        if remaining_goods:
-            print(f"\nAnalyzing opportunities with remaining goods: {remaining_goods}")
-            self._print_value_functions()
         
         for i, good in enumerate(remaining_goods):
             print(f"\nProcessing good {i+1}/{len(remaining_goods)}: {good}")
+            print("-" * 50)
             allocation_dict = self._champion_graph_allocation(good, allocation_dict)
             allocation_obj = self._dict_to_allocation(allocation_dict)
             # TODO: que solo use allocation dict
             self._print_allocation_state(allocation_obj, f"After assigning {good}")
         
-        print("\n" + "=" * 60)
-        print("PHASE 1 COMPLETE - Final allocation:")
         final_allocation = self._dict_to_allocation(allocation_dict)
-        
-        # Print final value functions for analysis
-        print("\nFINAL VALUE FUNCTIONS ANALYSIS:")
-        self._print_value_functions()
-        
-        self._print_allocation_state(final_allocation, "Final")
         
         # Check if allocation is EFX after Phase 1
         is_efx_after_phase1 = self.checker.check_EFX(final_allocation)
-        print(f"\nEFX Status after Phase 1: {'[+] EFX' if is_efx_after_phase1 else '[-] Not EFX'}")
+        
+        print("\n" + "="*80)
+        print("PHASE 2: CUT-AND-CHOOSE REDISTRIBUTION")
+        print("="*80)
         
         # PHASE 2: Cut-and-Choose redistribution (only if not EFX after Phase 1)
         if not is_efx_after_phase1:
-            print("\nPHASE 2: Cut-and-Choose Redistribution Between Envying Players")
-            print("-" * 65)
-            
+            print("EFX not achieved after Phase 1 - proceeding with redistribution")
             # Track Phase 2 execution
             phase2_info['executed'] = True
             _, initial_envy, _ = self._calculate_envy_matrix(final_allocation)
@@ -136,19 +116,14 @@ class AllocationFinder:
                     # TODO: actualizar esto a que solo use efx-envy y no envy 
                     phase2_info['envy_reduction'] = initial_envy - final_envy
                     
-                    self._print_allocation_state(final_allocation, "After Phase 2")
-                    
                     # Check final EFX status
                     is_efx_final = self.checker.check_EFX(final_allocation)
                     phase2_info['efx_achieved_in_phase2'] = is_efx_final
-                    print(f"\nFinal EFX Status: {'[+] EFX' if is_efx_final else '[-] Not EFX'}")
                 else:
-                    print("Phase 2: No improvements found")
                     phase2_info['final_envy'] = phase2_info['initial_envy']
             
             except RuntimeError as e:
                 # Phase 2 failed - this is a failed test case
-                print(f"\n[X] PHASE 2 FAILED: {str(e)}")
                 phase2_info['improvements_found'] = False
                 phase2_info['efx_achieved_in_phase2'] = False
                 phase2_info['final_envy'] = phase2_info['initial_envy']
@@ -156,6 +131,8 @@ class AllocationFinder:
                 
                 # This should be treated as a failed test
                 raise RuntimeError(f"Algorithm failed in Phase 2: {str(e)}")
+        else:
+            print("EFX achieved after Phase 1 - no redistribution needed")
         
         return final_allocation, phase2_info
     
@@ -727,6 +704,9 @@ class AllocationFinder:
         When no cycle exists, assign the good to a source node or best choice.
         Uses systematic evaluation to minimize EFX-envy in the system.
         
+        Prioritizes players who are champions (have EFX-envy towards others) over
+        traditional source nodes (players with no incoming edges).
+        
         Args:
             good: Good to assign
             allocation: Current allocation  
@@ -735,93 +715,117 @@ class AllocationFinder:
         Returns:
             dict: Updated allocation
         """
-        # Find source nodes (players with no incoming edges)
+        # Priority 1: Champions (players who have EFX-envy towards others)
+        champions = set(champion_graph.values()) if champion_graph else set()
+        
+        # Priority 2: Traditional source nodes (players with no incoming edges)
         all_players = {player.name for player in self.players}
         targets = set(champion_graph.keys())  # Players who are targets of envy
-        sources = all_players - targets  # Players who are not envied
+        traditional_sources = all_players - targets  # Players who are not envied
         
-        if sources:
-            print(f"      Source nodes found: {sources}")
+        # Try champions first, then traditional sources if needed
+        candidates_to_try = []
+        if champions:
+            candidates_to_try.append(("EFX-envy sources", champions))
+        if traditional_sources:
+            candidates_to_try.append(("Traditional Sources", traditional_sources))
+        
+        best_recipient = None
+        best_efx_envy = float('inf')
+        best_regular_envy = float('inf')
+        best_utility = float('inf')
+        tied_candidates = []
+        
+        # Tolerance for tie detection
+        TIE_TOLERANCE = config.get('algorithm.phase_1b.tie_tolerance', 0.001)
+        
+        for candidate_type, candidates in candidates_to_try:
+            if best_recipient is not None:
+                break  # Already found a good candidate from higher priority group
+                
+            print(f"      {candidate_type} found: {candidates}")
             print(f"      Evaluating assignment to minimize EFX-envy")
             
-            # Evaluate assignment to each source node
-            best_source = None
-            best_efx_envy = float('inf')
-            best_regular_envy = float('inf')
-            best_utility = float('inf')
-            tied_candidates = []
+            current_group_best = None
+            current_group_best_efx = float('inf')
+            current_group_best_regular = float('inf')
+            current_group_best_utility = float('inf')
+            current_group_tied = []
             
-            # Tolerance for tie detection
-            TIE_TOLERANCE = config.get('algorithm.phase_1b.tie_tolerance', 0.001)
-            
-            for source in sources:
-                player = next(p for p in self.players if p.name == source)
+            for candidate in candidates:
+                player = next(p for p in self.players if p.name == candidate)
                 valuation = player.get_valuation(good)
                 
-                # Test assignment to this source
+                # Test assignment to this candidate
                 test_allocation = allocation.copy()
                 for pname in test_allocation:
                     test_allocation[pname] = allocation[pname].copy()
-                test_allocation[source].append(good)
+                test_allocation[candidate].append(good)
                 
                 test_allocation_obj = self._dict_to_allocation(test_allocation)
                 _, test_efx_envy, _ = self._calculate_efx_envy_matrix(test_allocation_obj)
                 _, test_regular_envy, _ = self._calculate_envy_matrix(test_allocation_obj)
                 
-                # Calculate current utility for this source
-                current_utility = sum(player.get_valuation(g) for g in allocation[source])
+                # Calculate current utility for this candidate
+                current_utility = sum(player.get_valuation(g) for g in allocation[candidate])
                 
-                print(f"        {source} (values {good} at {valuation:.3f}): EFX-envy={test_efx_envy:.3f}, regular envy={test_regular_envy:.3f}, utility={current_utility:.3f}")
+                print(f"        {candidate} (values {good} at {valuation:.3f}): EFX-envy={test_efx_envy:.3f}, regular envy={test_regular_envy:.3f}, utility={current_utility:.3f}")
                 
                 # Primary criterion: EFX-envy (lower is better)
-                if test_efx_envy < best_efx_envy - TIE_TOLERANCE:
+                if test_efx_envy < current_group_best_efx - TIE_TOLERANCE:
                     # Clear winner in EFX-envy
-                    best_efx_envy = test_efx_envy
-                    best_regular_envy = test_regular_envy
-                    best_utility = current_utility
-                    best_source = source
-                    tied_candidates = [source]
-                elif abs(test_efx_envy - best_efx_envy) <= TIE_TOLERANCE:
+                    current_group_best_efx = test_efx_envy
+                    current_group_best_regular = test_regular_envy
+                    current_group_best_utility = current_utility
+                    current_group_best = candidate
+                    current_group_tied = [candidate]
+                elif abs(test_efx_envy - current_group_best_efx) <= TIE_TOLERANCE:
                     # EFX-envy tie - use regular envy as tie-breaker
-                    if test_regular_envy < best_regular_envy - TIE_TOLERANCE:
+                    if test_regular_envy < current_group_best_regular - TIE_TOLERANCE:
                         # Better regular envy breaks the EFX-envy tie
-                        best_efx_envy = test_efx_envy
-                        best_regular_envy = test_regular_envy
-                        best_utility = current_utility
-                        best_source = source
-                        tied_candidates = [source]
-                    elif abs(test_regular_envy - best_regular_envy) <= TIE_TOLERANCE:
+                        current_group_best_efx = test_efx_envy
+                        current_group_best_regular = test_regular_envy
+                        current_group_best_utility = current_utility
+                        current_group_best = candidate
+                        current_group_tied = [candidate]
+                    elif abs(test_regular_envy - current_group_best_regular) <= TIE_TOLERANCE:
                         # Both EFX-envy and regular envy tied - use utility as tie-breaker
-                        if current_utility < best_utility - TIE_TOLERANCE:
+                        if current_utility < current_group_best_utility - TIE_TOLERANCE:
                             # Lower utility breaks the tie
-                            best_efx_envy = test_efx_envy
-                            best_regular_envy = test_regular_envy
-                            best_utility = current_utility
-                            best_source = source
-                            tied_candidates = [source]
-                        elif abs(current_utility - best_utility) <= TIE_TOLERANCE:
+                            current_group_best_efx = test_efx_envy
+                            current_group_best_regular = test_regular_envy
+                            current_group_best_utility = current_utility
+                            current_group_best = candidate
+                            current_group_tied = [candidate]
+                        elif abs(current_utility - current_group_best_utility) <= TIE_TOLERANCE:
                             # All criteria tied - add to candidates for lexicographic tie-breaking
-                            if source not in tied_candidates:
-                                tied_candidates.append(source)
+                            if candidate not in current_group_tied:
+                                current_group_tied.append(candidate)
                             
                             # Include previous best if not already there
-                            if len(tied_candidates) == 1 and best_source and best_source not in tied_candidates:
-                                tied_candidates.insert(0, best_source)
+                            if len(current_group_tied) == 1 and current_group_best and current_group_best not in current_group_tied:
+                                current_group_tied.insert(0, current_group_best)
                             
-                            best_source = source
+                            current_group_best = candidate
             
-            # Handle ties with lexicographic order
-            if len(tied_candidates) > 1:
-                print(f"        Tie detected between {tied_candidates} - using lexicographic order")
-                best_source = min(tied_candidates)  # P1 < P2 < P3 < P4
-                print(f"        Lexicographic tie-breaker chose: {best_source}")
+            # Handle ties with lexicographic order for this group
+            if len(current_group_tied) > 1:
+                print(f"        Tie detected between {current_group_tied} - using lexicographic order")
+                current_group_best = min(current_group_tied)  # P1 < P2 < P3 < P4
+                print(f"        Lexicographic tie-breaker chose: {current_group_best}")
             
-            recipient = best_source
-            print(f"      [+] Source assignment chosen: {recipient} (EFX-envy: {best_efx_envy:.3f}, regular envy: {best_regular_envy:.3f}, utility: {best_utility:.3f})")
-        else:
-            # No clear source - assign to player who values this good most
+            # If we found a good candidate in this group, use it
+            if current_group_best is not None:
+                best_recipient = current_group_best
+                best_efx_envy = current_group_best_efx
+                best_regular_envy = current_group_best_regular
+                best_utility = current_group_best_utility
+                print(f"      [+] {candidate_type} assignment chosen: {best_recipient} (EFX-envy: {best_efx_envy:.3f}, regular envy: {best_regular_envy:.3f}, utility: {best_utility:.3f})")
+                break
+        
+        # If no candidates found in any group, assign to player who values this good most
+        if best_recipient is None:
             print(f"      No source nodes found - evaluating all players")
-            best_recipient = None
             best_value = -1
             
             for player in self.players:
@@ -829,10 +833,9 @@ class AllocationFinder:
                     best_value = player.get_valuation(good)
                     best_recipient = player.name
             
-            recipient = best_recipient
-            print(f"      No source found - assigned {good} to {recipient} (highest valuation: {best_value:.3f})")
+            print(f"      No source found - assigned {good} to {best_recipient} (highest valuation: {best_value:.3f})")
         
-        allocation[recipient].append(good)
+        allocation[best_recipient].append(good)
         
         return allocation
     
@@ -1011,18 +1014,6 @@ class AllocationFinder:
             print()
         
         print("-" * (8 + 12 * len(self.players)))
-        
-        # Print summary statistics
-        print(f"\n{'PLAYER STATISTICS':<20}")
-        print("-" * 50)
-        
-        for player in self.players:
-            valuations = [player.get_valuation(good) for good in self.goods]
-            avg_val = sum(valuations) / len(valuations)
-            min_val = min(valuations)
-            max_val = max(valuations)
-            
-            print(f"{player.name:<8}: Avg={avg_val:>6.3f}, Min={min_val:>6.3f}, Max={max_val:>6.3f}, Range={max_val-min_val:>6.3f}")
 
     def _print_envy_analysis(self, allocation, phase):
         """
@@ -1064,91 +1055,6 @@ class AllocationFinder:
         
         print("-" * 60)
         print(f"{'TOTAL SYSTEM ENVY':<15}{total_envy:>45.3f}")
-        
-        # Print individual envy analysis
-        print(f"\nINDIVIDUAL ENVY BREAKDOWN:")
-        print("-" * 40)
-        
-        for player_i in self.players:
-            print(f"\n{player_i.name} envies:")
-            player_total_envy = individual_envy_totals[player_i.name]
-            
-            if player_total_envy == 0:
-                print(f"  -> No one! (Total envy: 0.000)")
-            else:
-                envies = []
-                for player_j in self.players:
-                    if player_i.name != player_j.name:
-                        envy_val = envy_matrix[player_i.name][player_j.name]
-                        if envy_val > 0:
-                            envies.append((player_j.name, envy_val))
-                
-                # Sort by envy amount (descending)
-                envies.sort(key=lambda x: x[1], reverse=True)
-                
-                for envied_player, envy_amount in envies:
-                    percentage = (envy_amount / player_total_envy) * 100
-                    print(f"  -> {envied_player}: {envy_amount:.3f} ({percentage:.1f}% of {player_i.name}'s total envy)")
-                
-                print(f"  -> Total envy by {player_i.name}: {player_total_envy:.3f}")
-        
-        # Print problem areas
-        print(f"\nPROBLEM AREAS (High Envy Pairs):")
-        print("-" * 40)
-        
-        high_envy_pairs = []
-        for player_i in self.players:
-            for player_j in self.players:
-                if player_i.name != player_j.name:
-                    envy_val = envy_matrix[player_i.name][player_j.name]
-                    if envy_val > 0:
-                        high_envy_pairs.append((player_i.name, player_j.name, envy_val))
-        
-        # Sort by envy amount (descending)
-        high_envy_pairs.sort(key=lambda x: x[2], reverse=True)
-        
-        if not high_envy_pairs:
-            print("  [+] No envy detected! Allocation is envy-free.")
-        else:
-            print("  Top envy sources:")
-            for i, (envier, envied, envy_amount) in enumerate(high_envy_pairs[:5]):  # Top 5
-                percentage = (envy_amount / total_envy) * 100
-                print(f"  {i+1}. {envier} -> {envied}: {envy_amount:.3f} ({percentage:.1f}% of total envy)")
-            
-            if len(high_envy_pairs) > 5:
-                print(f"  ... and {len(high_envy_pairs) - 5} more envy relationships")
-        
-        # Print EFX status
-        is_efx = self.checker.check_EFX(allocation)
-        print(f"\nEFX STATUS: {'[+] EFX SATISFIED' if is_efx else '[-] NOT EFX'}")
-        
-        if not is_efx and total_envy == 0:
-            print("  Note: Zero envy but not EFX - this can happen with empty bundles or edge cases")
-        
-        # Print optimization suggestions
-        if total_envy > 0:
-            print(f"\nOPTIMIZATION OPPORTUNITIES:")
-            print("-" * 30)
-            
-            # Find player with highest envy
-            max_envy_player = max(individual_envy_totals.keys(), 
-                                key=lambda p: individual_envy_totals[p])
-            max_envy_amount = individual_envy_totals[max_envy_player]
-            
-            print(f"  * Focus on {max_envy_player} (highest total envy: {max_envy_amount:.3f})")
-            
-            # Find most envied player
-            envy_received = {player.name: 0.0 for player in self.players}
-            for player_i in self.players:
-                for player_j in self.players:
-                    if player_i.name != player_j.name:
-                        envy_received[player_j.name] += envy_matrix[player_i.name][player_j.name]
-            
-            most_envied = max(envy_received.keys(), key=lambda p: envy_received[p])
-            most_envied_amount = envy_received[most_envied]
-            
-            print(f"  * {most_envied} is most envied (receives {most_envied_amount:.3f} total envy)")
-            print(f"  * Consider transferring goods from {most_envied} to {max_envy_player}")
 
     def _find_efx_division_for_envier(self, envier, all_goods):
         """
@@ -1309,154 +1215,117 @@ class AllocationFinder:
 
     def _phase2_stepwise_redistribution(self, allocation):
         """
-        Phase 2: Stepwise cut-and-choose redistribution between envying players.
-        Implements dynamic updates to envy relationships and detects cycles.
-        Each step processes ONE envy relationship, then recalculates the list.
+        Phase 2: Hybrid EFX/Regular envy redistribution with dual queues.
+        
+        Implements a sophisticated two-queue system:
+        - EFX Queue: Contains EFX-envy relationships (primary focus)
+        - Regular Queue: Contains regular-only envy relationships (intervention)
+        
+        Algorithm Flow:
+        1. Process EFX queue until exhausted or all relationships rejected
+        2. If EFX queue stalled, attempt ONE regular envy intervention
+        3. If regular intervention succeeds, reset rejection marks and return to EFX queue
+        4. Continue until both queues exhausted or EFX achieved
+        
+        Args:
+            allocation: Initial allocation object
+            
+        Returns:
+            tuple: (final_allocation, total_steps)
         """
         current_allocation = allocation
-        step = 0
-
-        # Initialize envy relationships (L) and seen states for cycle detection
-        envy_relationships = self._get_envy_relationships(current_allocation)
-        seen_states = set()
-
-        # Calculate initial EFX-envy
+        step_counter = [0]  # Use list for mutable reference
+        
+        # Configuration
+        MAX_STEPS = config.get('algorithm.phase_2.max_steps', 100)
+        
+        # Initialize queue states
+        efx_queue_state = {
+            'relationships': self._get_envy_relationships(current_allocation),
+            'rejected': set()
+        }
+        
+        regular_queue_state = {
+            'relationships': self._get_regular_only_relationships(current_allocation),
+            'rejected': set()
+        }
+        
+        # Calculate initial metrics
         _, initial_efx_envy, _ = self._calculate_efx_envy_matrix(current_allocation)
         _, initial_regular_envy, _ = self._calculate_envy_matrix(current_allocation)
         
-        print(f"Phase 2: Starting stepwise redistribution")
-        print(f"  Initial EFX-envy: {initial_efx_envy:.3f}, Regular envy: {initial_regular_envy:.3f}")
+        # Global state tracking for cycle detection
+        seen_global_states = set()
         
-        # Show comparison between regular envy and EFX-envy relationships
-        regular_envy_matrix, _, _ = self._calculate_envy_matrix(current_allocation)
-        regular_relationships = []
-        for player_i in self.players:
-            for player_j in self.players:
-                if player_i.name != player_j.name and regular_envy_matrix[player_i.name][player_j.name] > 0:
-                    regular_relationships.append((player_i.name, player_j.name))
-        
-        print(f"  Regular envy relationships: {regular_relationships}")
-        print(f"  EFX-envy relationships: {envy_relationships}")
-
-        while envy_relationships:
-            step += 1
-            print(f"\n--- Step {step} ---")
-            print(f"  Current EFX-envy relationships in queue: {envy_relationships}")
-
-            # Capture the original state of the queue BEFORE processing
-            original_relationships = envy_relationships.copy()
-
-            # Create comprehensive state hash that includes both envy relationships and goods context
-            state_hash = self._create_phase2_state_hash(envy_relationships, current_allocation)
-            if state_hash in seen_states:
-                print(f"  [X] CYCLE DETECTED - same state seen before")
-                raise RuntimeError("Cycle detected in Phase 2 - algorithm failed.")
-            seen_states.add(state_hash)
-
-            # Extract ONE envy relationship from the queue
-            envier_name, envied_name = envy_relationships.pop(0)
-            print(f"  Processing pair: {envier_name} (envier) -> {envied_name} (envied)")
-
-            # Calculate current EFX-envy for comparison
+        # Main hybrid loop
+        while step_counter[0] < MAX_STEPS:
+            # Check termination conditions
             _, current_efx_envy, _ = self._calculate_efx_envy_matrix(current_allocation)
-            _, current_regular_envy, _ = self._calculate_envy_matrix(current_allocation)
-            print(f"  Current total EFX-envy: {current_efx_envy:.3f}, Regular envy: {current_regular_envy:.3f}")
-
-            # Get player objects
-            envier_obj = next(p for p in self.players if p.name == envier_name)
-            envied_obj = next(p for p in self.players if p.name == envied_name)
-
-            # Apply Cut-and-Choose
-            all_goods = current_allocation.get_assignment(envier_name) + current_allocation.get_assignment(envied_name)
             
-            if len(all_goods) < 2:
-                print(f"    [X] Skipping - not enough goods to divide ({len(all_goods)} goods)")
-                continue
+            if current_efx_envy == 0.0:
+                return current_allocation, step_counter[0]
+            
+            # Check if both queues are exhausted
+            efx_available = [rel for rel in efx_queue_state['relationships'] 
+                           if rel not in efx_queue_state['rejected']]
+            regular_available = [rel for rel in regular_queue_state['relationships'] 
+                               if rel not in regular_queue_state['rejected']]
+            
+            if not efx_available and not regular_available:
+                raise RuntimeError(f"Phase 2 failed: Both queues exhausted with EFX-envy = {current_efx_envy:.3f}")
+            
+            # Global cycle detection
+            global_state_hash = self._create_comprehensive_state_hash(
+                efx_queue_state, regular_queue_state, current_allocation
+            )
+            
+            if global_state_hash in seen_global_states:
+                raise RuntimeError(f"Phase 2 failed: Global cycle detected with EFX-envy = {current_efx_envy:.3f}")
+            
+            seen_global_states.add(global_state_hash)
+            
+            # PHASE A: Process EFX queue
+            if efx_available:
+                current_allocation, efx_progress = self._process_efx_queue_phase(
+                    efx_queue_state, current_allocation, step_counter
+                )
                 
-            efx_division = self._find_efx_division_for_envier(envier_obj, all_goods)
-
-            if not efx_division:
-                print(f"    [X] Could not find EFX division for {envier_name}")
-                continue
-
-            bundle_a, bundle_b = efx_division
-
-            # Step 2: Envied player chooses their preferred bundle
-            envied_value_a = sum(envied_obj.get_valuation(g) for g in bundle_a)
-            envied_value_b = sum(envied_obj.get_valuation(g) for g in bundle_b)
-
-            if envied_value_a >= envied_value_b:
-                envied_chosen = bundle_a
-                envier_gets = bundle_b
-            else:
-                envied_chosen = bundle_b
-                envier_gets = bundle_a
-
-            print(f"    [>] Cut-and-Choose:")
-            print(f"      Envier divided into: A={bundle_a}, B={bundle_b}")
-            print(f"      {envied_name} values: A={envied_value_a:.3f}, B={envied_value_b:.3f}")
-            print(f"      {envied_name} chose: {envied_chosen}")
-            print(f"      {envier_name} gets: {envier_gets}")
-
-            # Calculate new envy levels after redistribution
-            test_allocation = Allocation()
-            for player in self.players:
-                if player.name == envier_name:
-                    test_allocation.set_assignment(player.name, envier_gets)
-                elif player.name == envied_name:
-                    test_allocation.set_assignment(player.name, envied_chosen)
-                else:
-                    test_allocation.set_assignment(player.name, current_allocation.get_assignment(player.name))
-            self.manager.calculate_utilities(test_allocation)
-
-            _, new_efx_envy, _ = self._calculate_efx_envy_matrix(test_allocation)
-            _, new_regular_envy, _ = self._calculate_envy_matrix(test_allocation)
-
-            print(f"    [?] Evaluating redistribution:")
-            print(f"      Current EFX-envy: {current_efx_envy:.3f} -> New EFX-envy: {new_efx_envy:.3f}")
-            print(f"      Current regular envy: {current_regular_envy:.3f} -> New regular envy: {new_regular_envy:.3f}")
-
-            # Apply redistribution only if it reduces total EFX-envy
-            if new_efx_envy < current_efx_envy:
-                print(f"    [+] Redistribution ACCEPTED - EFX-envy reduced by {current_efx_envy - new_efx_envy:.3f}")
-                current_allocation = test_allocation
-
-                # Recalculate envy relationships after this redistribution
-                envy_relationships = self._get_envy_relationships(current_allocation)
-                print(f"    [>] Updated EFX-envy relationships: {original_relationships} -> {envy_relationships}")
+                if efx_progress:
+                    # Reset rejection marks and update both queues
+                    self._reset_rejection_marks(efx_queue_state, regular_queue_state)
+                    
+                    # Update regular queue after EFX progress
+                    regular_queue_state['relationships'] = self._get_regular_only_relationships(current_allocation)
+                    
+                    continue  # Go back to EFX queue processing
+            
+            # PHASE B: EFX queue stalled, try regular intervention
+            regular_available = [rel for rel in regular_queue_state['relationships'] 
+                               if rel not in regular_queue_state['rejected']]
+            
+            if regular_available:
+                current_allocation, regular_progress = self._process_one_regular_relationship(
+                    regular_queue_state, current_allocation, step_counter
+                )
                 
-                # Reset seen states since we made progress
-                seen_states = set()
-            else:
-                print(f"    [-] Redistribution REJECTED - does not reduce EFX-envy")
-                print(f"      (would increase by {new_efx_envy - current_efx_envy:.3f})")
-
-            # Print current step summary
-            _, step_final_efx_envy, _ = self._calculate_efx_envy_matrix(current_allocation)
-            _, step_final_regular_envy, _ = self._calculate_envy_matrix(current_allocation)
-            print(f"  [*] Step {step} complete:")
-            print(f"    Final EFX-envy: {step_final_efx_envy:.3f}, Regular envy: {step_final_regular_envy:.3f}")
-            print(f"    Remaining relationships to process: {len(envy_relationships)}")
-
-            # Check if EFX is achieved after this step
-            if step_final_efx_envy == 0.0:
-                print(f"\n[!] EFX ACHIEVED after {step} steps!")
-                print(f"  Final EFX-envy: {step_final_efx_envy:.3f}, Final regular envy: {step_final_regular_envy:.3f}")
-                print(f"  Improvement: EFX-envy {initial_efx_envy:.3f} -> {step_final_efx_envy:.3f} (-{initial_efx_envy - step_final_efx_envy:.3f})")
-                print(f"  Early termination: EFX condition satisfied, no need to process remaining {len(envy_relationships)} relationships")
-                return current_allocation, step
-
-        # Final check for EFX-envy (only reached if loop completed without early termination)
-        _, final_efx_envy, _ = self._calculate_efx_envy_matrix(current_allocation)
-        _, final_regular_envy, _ = self._calculate_envy_matrix(current_allocation)
+                if regular_progress:
+                    # Reset rejection marks and update EFX queue
+                    self._reset_rejection_marks(efx_queue_state, regular_queue_state)
+                    
+                    # Update EFX queue after regular progress
+                    efx_queue_state['relationships'] = self._get_envy_relationships(current_allocation)
+                    continue  # Go back to EFX queue processing
+            
+            # If we reach here, no progress was made in either phase
+            break
         
-        if final_efx_envy == 0:
-            print(f"\n[!] EFX ACHIEVED after {step} steps!")
-            print(f"  Final EFX-envy: {final_efx_envy:.3f}, Final regular envy: {final_regular_envy:.3f}")
-            print(f"  Improvement: EFX-envy {initial_efx_envy:.3f} -> {final_efx_envy:.3f} (-{initial_efx_envy - final_efx_envy:.3f})")
-            return current_allocation, step
-        else:
-            raise RuntimeError(f"Phase 2 failed: No valid redistribution found and EFX-envy is not zero ({final_efx_envy:.3f}).")
+        # Max steps exceeded
+        if step_counter[0] >= MAX_STEPS:
+            raise RuntimeError(f"Phase 2 failed: Maximum steps ({MAX_STEPS}) exceeded with EFX-envy = {current_efx_envy:.3f}")
+        
+        # Final failure
+        _, final_efx_envy, _ = self._calculate_efx_envy_matrix(current_allocation)
+        raise RuntimeError(f"Phase 2 failed: No progress possible with EFX-envy = {final_efx_envy:.3f}")
 
     def _get_envy_relationships(self, allocation):
         """
@@ -1493,6 +1362,85 @@ class AllocationFinder:
                         envy_relationships.append((player_i.name, player_j.name))
 
         return envy_relationships
+
+    def _get_regular_only_relationships(self, allocation):
+        """
+        Calculate regular envy relationships that are NOT EFX-envy relationships.
+        
+        This ensures that the regular queue only contains relationships that exist
+        due to regular envy but not EFX-envy, preventing duplicate processing.
+        
+        Args:
+            allocation: Current allocation object
+
+        Returns:
+            list: List of tuples representing regular-only envy relationships (envier, envied)
+        """
+        # Get all regular envy relationships
+        regular_envy_matrix, _, _ = self._calculate_envy_matrix(allocation)
+        regular_relationships = []
+        for player_i in self.players:
+            for player_j in self.players:
+                if player_i.name != player_j.name and regular_envy_matrix[player_i.name][player_j.name] > 0:
+                    regular_relationships.append((player_i.name, player_j.name))
+        
+        # Get EFX-envy relationships
+        efx_relationships = set(self._get_envy_relationships(allocation))
+        
+        # Return only regular relationships that are NOT in EFX relationships
+        regular_only = [rel for rel in regular_relationships if rel not in efx_relationships]
+        
+        return regular_only
+
+    def _reset_rejection_marks(self, efx_queue_state, regular_queue_state):
+        """
+        Reset rejection marks for both queues when progress is made.
+        
+        Args:
+            efx_queue_state: EFX queue state dict
+            regular_queue_state: Regular queue state dict
+        """
+        efx_queue_state['rejected'].clear()
+        regular_queue_state['rejected'].clear()
+
+    def _create_comprehensive_state_hash(self, efx_queue_state, regular_queue_state, allocation):
+        """
+        Create a comprehensive hash for the global Phase 2 state.
+        
+        Includes:
+        - Current allocation
+        - Active relationships in both queues
+        - Rejected relationships in both queues
+        
+        Args:
+            efx_queue_state: EFX queue state dict
+            regular_queue_state: Regular queue state dict
+            allocation: Current allocation object
+            
+        Returns:
+            int: Hash representing the complete global state
+        """
+        state_components = []
+        
+        # Add allocation state for all players
+        for player in self.players:
+            player_goods = allocation.get_assignment(player.name)
+            sorted_goods = tuple(sorted(player_goods))
+            state_components.append((player.name, sorted_goods))
+        
+        # Add EFX queue state (active + rejected)
+        efx_active = frozenset(efx_queue_state['relationships'])
+        efx_rejected = frozenset(efx_queue_state['rejected'])
+        state_components.append(('efx_active', efx_active))
+        state_components.append(('efx_rejected', efx_rejected))
+        
+        # Add Regular queue state (active + rejected)
+        regular_active = frozenset(regular_queue_state['relationships'])
+        regular_rejected = frozenset(regular_queue_state['rejected'])
+        state_components.append(('regular_active', regular_active))
+        state_components.append(('regular_rejected', regular_rejected))
+        
+        return hash(tuple(state_components))
 
     def _create_phase2_state_hash(self, envy_relationships, allocation):
         """
@@ -1532,4 +1480,272 @@ class AllocationFinder:
         
         # Create final hash from all components
         return hash(tuple(state_components))
+
+    def _process_efx_queue_phase(self, efx_queue_state, current_allocation, step_counter):
+        """
+        Process EFX queue until exhausted or all relationships rejected.
+        
+        Args:
+            efx_queue_state: EFX queue state dict
+            current_allocation: Current allocation object
+            step_counter: List with single int for step counting (mutable reference)
+            
+        Returns:
+            tuple: (updated_allocation, progress_made)
+        """
+        progress_made = False
+        
+        while efx_queue_state['relationships']:
+            # Check if all remaining relationships are rejected
+            available_relationships = [rel for rel in efx_queue_state['relationships'] 
+                                     if rel not in efx_queue_state['rejected']]
+            
+            if not available_relationships:
+                print(f"   [-] All EFX relationships rejected - queue exhausted")
+                break
+            
+            # Process next available relationship
+            step_counter[0] += 1
+            envier_name, envied_name = available_relationships[0]  # FIFO
+            efx_queue_state['relationships'].remove((envier_name, envied_name))
+            
+            print(f"\n   --- EFX Step {step_counter[0]} ---")
+            print(f"   Processing EFX pair: {envier_name} -> {envied_name}")
+            
+            # Attempt redistribution
+            redistribution_result = self._attempt_redistribution(
+                envier_name, envied_name, current_allocation, "EFX", step_counter[0]
+            )
+            
+            if redistribution_result['accepted']:
+                current_allocation = redistribution_result['new_allocation']
+                progress_made = True
+                print(f"   [+] EFX redistribution ACCEPTED")
+                
+                # Update queues after progress
+                efx_queue_state['relationships'] = self._get_envy_relationships(current_allocation)
+                print(f"   [UPDATE] New EFX relationships: {efx_queue_state['relationships']}")
+                
+                return current_allocation, True  # Return immediately after progress
+            else:
+                # Mark as rejected
+                efx_queue_state['rejected'].add((envier_name, envied_name))
+                print(f"   [-] EFX redistribution REJECTED - marked as rejected")
+        
+        print(f"   [PHASE A COMPLETE] Progress made: {progress_made}")
+        return current_allocation, progress_made
+
+    def _process_one_regular_relationship(self, regular_queue_state, current_allocation, step_counter):
+        """
+        Process ONE regular envy relationship.
+        
+        Args:
+            regular_queue_state: Regular queue state dict
+            current_allocation: Current allocation object
+            step_counter: List with single int for step counting (mutable reference)
+            
+        Returns:
+            tuple: (updated_allocation, progress_made)
+        """
+        # Check if we have available relationships
+        available_relationships = [rel for rel in regular_queue_state['relationships'] 
+                                 if rel not in regular_queue_state['rejected']]
+        
+        if not available_relationships:
+            return current_allocation, False
+        
+        # Process next available relationship (FIFO)
+        step_counter[0] += 1
+        envier_name, envied_name = available_relationships[0]
+        regular_queue_state['relationships'].remove((envier_name, envied_name))
+        
+        print(f"\n   --- Regular Step {step_counter[0]} ---")
+        print(f"   Processing Regular pair: {envier_name} -> {envied_name}")
+        
+        # Attempt redistribution
+        redistribution_result = self._attempt_redistribution(
+            envier_name, envied_name, current_allocation, "REGULAR", step_counter[0]
+        )
+        
+        if redistribution_result['accepted']:
+            current_allocation = redistribution_result['new_allocation']
+            print(f"   [+] Regular redistribution ACCEPTED")
+            
+            # Update BOTH queues after progress
+            regular_queue_state['relationships'] = self._get_regular_only_relationships(current_allocation)
+            print(f"   [UPDATE] New Regular relationships: {regular_queue_state['relationships']}")
+            
+            return current_allocation, True
+        else:
+            # Mark as rejected
+            regular_queue_state['rejected'].add((envier_name, envied_name))
+            print(f"   [-] Regular redistribution REJECTED - marked as rejected")
+            return current_allocation, False
+
+    def _attempt_redistribution(self, envier_name, envied_name, current_allocation, queue_type, step_num):
+        """
+        Attempt cut-and-choose redistribution between two players with dual evaluation.
+        
+        Evaluates BOTH scenarios:
+        1. Envied chooses first (traditional cut-and-choose)
+        2. Envier chooses first (reversed cut-and-choose)
+        
+        Selects the option that provides better improvement for the target metric.
+        
+        Args:
+            envier_name: Name of envying player
+            envied_name: Name of envied player
+            current_allocation: Current allocation object
+            queue_type: "EFX" or "REGULAR"
+            step_num: Step number for logging
+            
+        Returns:
+            dict: {
+                'accepted': bool,
+                'new_allocation': Allocation or None,
+                'improvement': float,
+                'criterion': str
+            }
+        """
+        print(f"     [ATTEMPT] Dual Cut-and-Choose for {queue_type} queue")
+        
+        # Calculate current metrics
+        _, current_efx_envy, _ = self._calculate_efx_envy_matrix(current_allocation)
+        _, current_regular_envy, _ = self._calculate_envy_matrix(current_allocation)
+        print(f"     Current EFX-envy: {current_efx_envy:.3f}, Regular envy: {current_regular_envy:.3f}")
+
+        # Get player objects
+        envier_obj = next(p for p in self.players if p.name == envier_name)
+        envied_obj = next(p for p in self.players if p.name == envied_name)
+
+        # Apply Cut-and-Choose
+        all_goods = current_allocation.get_assignment(envier_name) + current_allocation.get_assignment(envied_name)
+        
+        if len(all_goods) < 2:
+            print(f"     [X] Not enough goods to divide ({len(all_goods)} goods)")
+            return {'accepted': False, 'new_allocation': None, 'improvement': 0.0, 'criterion': 'insufficient_goods'}
+            
+        efx_division = self._find_efx_division_for_envier(envier_obj, all_goods)
+
+        if not efx_division:
+            print(f"     [X] Could not find EFX division for {envier_name}")
+            return {'accepted': False, 'new_allocation': None, 'improvement': 0.0, 'criterion': 'no_efx_division'}
+
+        bundle_a, bundle_b = efx_division
+        print(f"     [>] Division: A={bundle_a}, B={bundle_b}")
+
+        # SCENARIO 1: Envied chooses first (traditional)
+        envied_value_a = sum(envied_obj.get_valuation(g) for g in bundle_a)
+        envied_value_b = sum(envied_obj.get_valuation(g) for g in bundle_b)
+
+        if envied_value_a >= envied_value_b:
+            scenario1_envied_gets = bundle_a
+            scenario1_envier_gets = bundle_b
+        else:
+            scenario1_envied_gets = bundle_b
+            scenario1_envier_gets = bundle_a
+
+        print(f"     [1] ENVIED CHOOSES: {envied_name} values A={envied_value_a:.3f}, B={envied_value_b:.3f}")
+        print(f"         {envied_name} chose {scenario1_envied_gets}, {envier_name} gets {scenario1_envier_gets}")
+
+        # Calculate metrics for scenario 1
+        test_allocation_1 = Allocation()
+        for player in self.players:
+            if player.name == envier_name:
+                test_allocation_1.set_assignment(player.name, scenario1_envier_gets)
+            elif player.name == envied_name:
+                test_allocation_1.set_assignment(player.name, scenario1_envied_gets)
+            else:
+                test_allocation_1.set_assignment(player.name, current_allocation.get_assignment(player.name))
+        self.manager.calculate_utilities(test_allocation_1)
+
+        _, scenario1_efx_envy, _ = self._calculate_efx_envy_matrix(test_allocation_1)
+        _, scenario1_regular_envy, _ = self._calculate_envy_matrix(test_allocation_1)
+
+        # SCENARIO 2: Envier chooses first (reversed)
+        envier_value_a = sum(envier_obj.get_valuation(g) for g in bundle_a)
+        envier_value_b = sum(envier_obj.get_valuation(g) for g in bundle_b)
+
+        if envier_value_a >= envier_value_b:
+            scenario2_envier_gets = bundle_a
+            scenario2_envied_gets = bundle_b
+        else:
+            scenario2_envier_gets = bundle_b
+            scenario2_envied_gets = bundle_a
+
+        print(f"     [2] ENVIER CHOOSES: {envier_name} values A={envier_value_a:.3f}, B={envier_value_b:.3f}")
+        print(f"         {envier_name} chose {scenario2_envier_gets}, {envied_name} gets {scenario2_envied_gets}")
+
+        # Calculate metrics for scenario 2
+        test_allocation_2 = Allocation()
+        for player in self.players:
+            if player.name == envier_name:
+                test_allocation_2.set_assignment(player.name, scenario2_envier_gets)
+            elif player.name == envied_name:
+                test_allocation_2.set_assignment(player.name, scenario2_envied_gets)
+            else:
+                test_allocation_2.set_assignment(player.name, current_allocation.get_assignment(player.name))
+        self.manager.calculate_utilities(test_allocation_2)
+
+        _, scenario2_efx_envy, _ = self._calculate_efx_envy_matrix(test_allocation_2)
+        _, scenario2_regular_envy, _ = self._calculate_envy_matrix(test_allocation_2)
+
+        print(f"     [COMPARISON]")
+        print(f"       Scenario 1 (envied chooses): EFX-envy {current_efx_envy:.3f} -> {scenario1_efx_envy:.3f}, Regular {current_regular_envy:.3f} -> {scenario1_regular_envy:.3f}")
+        print(f"       Scenario 2 (envier chooses): EFX-envy {current_efx_envy:.3f} -> {scenario2_efx_envy:.3f}, Regular {current_regular_envy:.3f} -> {scenario2_regular_envy:.3f}")
+
+        # Select best scenario based on queue type
+        if queue_type == "EFX":
+            # EFX queue: prioritize EFX-envy reduction
+            improvement1 = current_efx_envy - scenario1_efx_envy
+            improvement2 = current_efx_envy - scenario2_efx_envy
+            
+            print(f"     [EFX ANALYSIS] Improvement1: {improvement1:.3f}, Improvement2: {improvement2:.3f}")
+            
+            # Choose best improvement (highest positive value)
+            if improvement1 > 0 and improvement1 >= improvement2:
+                best_scenario = 1
+                best_allocation = test_allocation_1
+                best_improvement = improvement1
+                chosen_method = "envied_chooses"
+            elif improvement2 > 0:
+                best_scenario = 2
+                best_allocation = test_allocation_2
+                best_improvement = improvement2
+                chosen_method = "envier_chooses"
+            else:
+                print(f"     [-] Neither scenario reduces EFX-envy")
+                return {'accepted': False, 'new_allocation': None, 'improvement': 0.0, 'criterion': 'no_efx_improvement'}
+            
+            print(f"     [+] EFX: Chose scenario {best_scenario} ({chosen_method}) with EFX-envy reduction: {best_improvement:.3f}")
+            return {'accepted': True, 'new_allocation': best_allocation, 'improvement': best_improvement, 'criterion': f'efx_envy_reduction_{chosen_method}'}
+        
+        elif queue_type == "REGULAR":
+            # Regular queue: prioritize regular envy reduction
+            improvement1 = current_regular_envy - scenario1_regular_envy
+            improvement2 = current_regular_envy - scenario2_regular_envy
+            
+            print(f"     [REGULAR ANALYSIS] Improvement1: {improvement1:.3f}, Improvement2: {improvement2:.3f}")
+            
+            # Choose best improvement (highest positive value)
+            if improvement1 > 0 and improvement1 >= improvement2:
+                best_scenario = 1
+                best_allocation = test_allocation_1
+                best_improvement = improvement1
+                chosen_method = "envied_chooses"
+            elif improvement2 > 0:
+                best_scenario = 2
+                best_allocation = test_allocation_2
+                best_improvement = improvement2
+                chosen_method = "envier_chooses"
+            else:
+                print(f"     [-] Neither scenario reduces regular envy")
+                return {'accepted': False, 'new_allocation': None, 'improvement': 0.0, 'criterion': 'no_regular_improvement'}
+            
+            print(f"     [+] REGULAR: Chose scenario {best_scenario} ({chosen_method}) with regular envy reduction: {best_improvement:.3f}")
+            return {'accepted': True, 'new_allocation': best_allocation, 'improvement': best_improvement, 'criterion': f'regular_envy_reduction_{chosen_method}'}
+        
+        else:
+            print(f"     [X] Unknown queue type: {queue_type}")
+            return {'accepted': False, 'new_allocation': None, 'improvement': 0.0, 'criterion': 'unknown_queue_type'}
 
